@@ -35,3 +35,21 @@ class generator extends uvm_sequence #(transaction);
     end
   endtask
 endclass
+
+class driver extends uvm_driver #(transaction);
+  `uvm_component_utils(driver);
+  
+  function new(input string path, uvm_component name);
+    super.new(path, name);
+  endfunction
+  
+  transaction t;
+  virtual dff_if dff;
+  
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    t = transaction::type_id::create("t");
+    
+    if (!uvm_config_db #(virtual diff_if)::get(this, "", "dff_if", dff);
+        `uvm_error("DRV", "Unable to access uvm_config_db");
+  endfunction
