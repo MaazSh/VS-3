@@ -125,9 +125,17 @@ class scoreboard extends uvm_scoreboard;
     t = t1;
     `uvm_info("SCO", $sformatf("Data rcv from monitor: din= %0d, dout= %0d", t1.din, t1.dout), UVM_NONE);
 
+    if ((t.reset == 1'b1) && t.din == (t.dout != 1'b0)) begin
+      `uvm_error("SCO", "Reset Failed"); 
+    end else 
+      if (t.dout != t.din) begin
+      `uvm_error("SCO", "Different DFF values"); 
+    end else begin
+      `uvm_info("SCO", "Test Passed"); end
 
 
-    if (t.reset) begin
+
+/*    if (t.reset) begin
   if (t.dout !== 1'b0)
     `uvm_error("SCO", "Reset failed");
 end
@@ -136,4 +144,4 @@ else begin
     `uvm_error("SCO", "DFF mismatch");
 end
 
-prev_din = t.din;
+prev_din = t.din; */
