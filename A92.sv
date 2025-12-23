@@ -1,12 +1,15 @@
+`include "uvm_macros.svh"
+import uvm_pkg::*;
+
 class transaction extends uvm_sequence_item;
-  `uvm_object_utils(transaction);
+ // `uvm_object_utils(transaction);
   
   function new(input string path = "transaction");
     super.new(path);
   endfunction
   
-  rand bit clk, rst, din;
-  bit dout;
+  rand bit din;
+  bit rst, dout, clk;
   
   `uvm_object_utils_begin(transaction)
   `uvm_field_int(clk, UVM_DEFAULT)
@@ -20,6 +23,8 @@ endclass
 class generator extends uvm_sequence #(transaction);
   `uvm_object_utils(generator);
   
+  transaction t;
+  
   function new(input string path = "generator");
     super.new(path);
   endfunction
@@ -31,11 +36,11 @@ class generator extends uvm_sequence #(transaction);
       start_item(t);
       t.randomize();
       finish_item(t);
-      `uvm_info("GEN", $sformatf("Data sent to driver: clk= %0d, rst= %0d, din= %0d", t.clk, t.rst, t.din), UVM_NONE);
+      `uvm_info("GEN", $sformatf("Data sent to driver: din= %0d", t.din), UVM_NONE);
     end
   endtask
 endclass
-
+  
 class driver extends uvm_driver #(transaction);
   `uvm_component_utils(driver);
   
@@ -50,26 +55,27 @@ class driver extends uvm_driver #(transaction);
     super.build_phase(phase);
     t = transaction::type_id::create("t");
     
-    if (!uvm_config_db #(virtual diff_if)::get(this, "", "dff_if", dff);
-        `uvm_error("DRV", "Unable to access uvm_config_db");
+    if (!uvm_config_db #(virtual dff_if)::get(this, "", "dff", dff)) begin
+      `uvm_error("DRV", "Unable to access uvm_config_db") end
   endfunction
-
-   
+    
   task reset();
     dff.rst <= 1'b1;
-    dout <= 1'b0;
+    dff.dout <= 1'b0;
       
     repeat(5) @(posedge dff.clk);
       dff.rst <= 1'b0;
       `uvm_info("DRV", "Reset done", UVM_NONE);
-    end
   endtask
     
   virtual task run_phase(uvm_phase phase);
     reset();
     forever begin
       seq_item_port.get_next_item(t);
-      `uvm_info("DRV", $sformatf("Trigger DUT: din= %0d", dff.din), UVM_NONE);
+      dff.din <= t.din;
+      @(posedge dff.clk);
+      seq_item_port.item_done();
+      `uvm_info("DRV", $sformatf("Trigger DUT: din= %0d", t.din), UVM_NONE);
     end
     @(posedge dff.clk);
   endtask
@@ -80,7 +86,7 @@ class monitor extends uvm_monitor;
   `uvm_component_utils(monitor);
   
   uvm_analysis_port #(transaction) send;
-  transaction t;
+  transaction tr;
   virtual dff_if dff;
   
   function new(input string path = "monitor", uvm_component parent = null);
@@ -90,17 +96,21 @@ class monitor extends uvm_monitor;
   
   virtual function void build_phase(uvm_phase phase);
     super.build_phase(phase);
-    t = transaction::type_id::create("t");
-    if(!uvm_config_db #(virtual dff_if)::get(this, "", "dff_if", dff_if) begin
+    tr = transaction::type_id::create("tr");
+    if(!uvm_config_db #(virtual dff_if)::get(this, "", "dff", dff)) begin
       `uvm_error("MON", "Unable to access uvm_config_db") end
   endfunction
        
   virtual task run_phase(uvm_phase phase);
+    @(negedge dff.rst);
     forever begin
       @(posedge dff.clk);
-      t.din = dff.din;
-      `uvm_info("MON", $sformatf("Data sent to scoreboard: din= %0d", dff.din), UVM_NONE);
-      send_write(t);
+      tr.din = dff.din;
+      tr.dout = dff.dout;
+      tr.rst = dff.rst;
+      tr.clk = dff.clk;
+      `uvm_info("MON", $sformatf("Data sent to scoreboard: din= %0d, dout= %0d", tr.din, tr.dout), UVM_NONE);
+      send.write(tr);
     end
   endtask
 endclass
@@ -108,6 +118,7 @@ endclass
 class scoreboard extends uvm_scoreboard;
   `uvm_component_utils(scoreboard);
   
+  bit prevDin;
   uvm_analysis_imp #(transaction, scoreboard) recv;
   transaction t;
   
@@ -118,30 +129,136 @@ class scoreboard extends uvm_scoreboard;
   
   virtual function void build_phase(uvm_phase phase);
     super.build_phase(phase);
-    t = transaction:type_id::create("t");
+    t = transaction::type_id::create("t");
   endfunction
   
   virtual function void write(transaction t1);
     t = t1;
-    `uvm_info("SCO", $sformatf("Data rcv from monitor: din= %0d, dout= %0d", t1.din, t1.dout), UVM_NONE);
-
-    if ((t.reset == 1'b1) && t.din == (t.dout != 1'b0)) begin
-      `uvm_error("SCO", "Reset Failed"); 
-    end else 
-      if (t.dout != t.din) begin
-      `uvm_error("SCO", "Different DFF values"); 
+    `uvm_info("SCO", $sformatf("Data rcv from monitor: din= %0d, dout= %0d, rst= %0d, clk= %0d", t1.din, t1.dout, t1.rst, t1.clk), UVM_NONE);
+    
+    if (t.rst) begin
+      if(t1.dout != 1'b0)
+        `uvm_error("SCO", "Reset Failed")
     end else begin
-      `uvm_info("SCO", "Test Passed"); end
+      if(t1.dout != prevDin)
+        `uvm_error("SCO", "DFF values do not match")
+      else
+        `uvm_info("SCO", "Test Passed", UVM_NONE)
+    end
+    
+    prevDin = t1.din;     
+    
+  endfunction
+endclass
+       
+class agent extends uvm_agent;
+  `uvm_component_utils(agent);
+  
+  monitor m;
+  driver d;
+  uvm_sequencer #(transaction) seq;
+  
+  function new(input string path = "agent", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+  
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    m = monitor::type_id::create("m", this);
+    d = driver::type_id::create("d", this);
+    seq = uvm_sequencer #(transaction)::type_id::create("seq", this);
+  endfunction
+  
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    d.seq_item_port.connect(seq.seq_item_export);
+  endfunction
+endclass
+    
+class env extends uvm_env;  
+  `uvm_component_utils(env);
+  
+  agent a;
+  scoreboard s;
+  
+  function new(input string path = "env", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+  
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    a = agent::type_id::create("a", this);
+    s = scoreboard::type_id::create("s", this);
+  endfunction
+  
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    a.m.send.connect(s.recv);
+  endfunction
+endclass
+       
+class test extends uvm_test;
+  `uvm_component_utils(test);
+  
+  env e;
+  generator g;
+  
+  function new(input string path = "test", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+  
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    e = env::type_id::create("e", this);
+    g = generator::type_id::create("g", this);
+  endfunction
+  
+  virtual task run_phase(uvm_phase phase);
+    phase.raise_objection(this);
+    g.start(e.a.seq);
+    #10;
+    phase.drop_objection(this);
+  endtask
+endclass
+       
+module tb;
+  
+  dff_if dff();
+  
+  initial begin
+    dff.clk = 0;
+    dff.rst = 0;
+  end
+  
+  always #10 dff.clk = ~dff.clk;
+  
+  dff dut(.clk(dff.clk), .rst(dff.rst), .din(dff.din), .dout(dff.dout));
+  
+  initial begin
+    uvm_config_db #(virtual dff_if)::set(null, "*", "dff", dff);
+    run_test("test");
+  end
+endmodule
 
+-------------------------------------------------------------------------------------------
+// design
 
+module dff
+  (
+    input clk, rst, din, ////din - data input, rst - active high synchronus
+    output reg dout ////dout - data output
+  );
+  
+  always@(posedge clk)
+    begin
+      if(rst == 1'b1) 
+        dout <= 1'b0;
+      else
+        dout <= din;
+    end
+  
+endmodule
 
-/*    if (t.reset) begin
-  if (t.dout !== 1'b0)
-    `uvm_error("SCO", "Reset failed");
-end
-else begin
-  if (t.dout !== prev_din)
-    `uvm_error("SCO", "DFF mismatch");
-end
-
-prev_din = t.din; */
+interface dff_if();
+  logic clk, rst, din, dout;
+endinterface
