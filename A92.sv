@@ -1,3 +1,5 @@
+// Verification of DFF
+
 `include "uvm_macros.svh"
 import uvm_pkg::*;
 
@@ -102,7 +104,7 @@ class monitor extends uvm_monitor;
   endfunction
        
   virtual task run_phase(uvm_phase phase);
-    @(negedge dff.rst);
+//    @(negedge dff.rst);
     forever begin
       @(posedge dff.clk);
       tr.din = dff.din;
@@ -113,6 +115,18 @@ class monitor extends uvm_monitor;
       send.write(tr);
     end
   endtask
+
+ covergroup cg; // Added on to assignment
+    option.per_instance = 1;
+      
+    din: coverpoint tr.din {bins zero = {0}; bins one = {1};}
+    dout: coverpoint tr.dout {bins zero = {0}; bins one = {1};}
+    rst: coverpoint tr.rst {bins low = {0}; bins high = {1};}
+    
+    cross din, dout {bins zero_zero = binsof(din) intersect {0} && binsof(dout) intersect {0};
+                       bins one_one = binsof(dout) intersect {1} && binsof(dout) intersect {1};}
+  endgroup
+ 
 endclass
        
 class scoreboard extends uvm_scoreboard;
@@ -216,6 +230,8 @@ class test extends uvm_test;
   virtual task run_phase(uvm_phase phase);
     phase.raise_objection(this);
     g.start(e.a.seq);
+    #10;
+    e.a.d.reset(); // Test reset
     #10;
     phase.drop_objection(this);
   endtask
